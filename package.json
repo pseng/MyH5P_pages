@@ -1,0 +1,23 @@
+{
+  "name": "myh5p-player",
+  "version": "1.0.0",
+  "description": "H5P Player and Editor built with @lumieducation/h5p-server",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "download:h5p": "bash scripts/download-h5p.sh",
+    "postinstall": "bash scripts/download-h5p.sh"
+  },
+  "license": "CC0-1.0",
+  "dependencies": {
+    "@lumieducation/h5p-server": "^9.0.0",
+    "@lumieducation/h5p-express": "^9.0.0",
+    "@lumieducation/h5p-html-exporter": "^9.0.0",
+    "express": "^4.21.0",
+    "express-fileupload": "^1.5.0",
+    "i18next": "^23.0.0",
+    "i18next-fs-backend": "^2.3.0",
+    "i18next-http-middleware": "^3.5.0"
+  }
+}

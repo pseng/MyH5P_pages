@@ -1,0 +1,8 @@
+node_modules/
+h5p/core/
+h5p/editor/
+h5p/tmp/
+h5p/content/
+h5p/user-data/
+h5p/libraries/
+*.log
