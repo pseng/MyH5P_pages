@@ -113,7 +113,7 @@ async function start() {
   );
 
   // Learning Path routes (node editor, player, API)
-  const learningPathRouter = createLearningPathRoutes(h5pEditor);
+  const learningPathRouter = createLearningPathRoutes(h5pEditor, h5pPlayer);
   app.use('/learning-paths/static', express.static(
     path.join(__dirname, 'learningPath', 'static'),
     { maxAge: '1d' }

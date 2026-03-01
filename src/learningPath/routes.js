@@ -6,9 +6,10 @@ const xapi = require('./xapi');
 /**
  * Creates Express routes for the learning path creator.
  * @param {import('@lumieducation/h5p-server').H5PEditor} h5pEditor
+ * @param {import('@lumieducation/h5p-server').H5PPlayer} h5pPlayer
  * @returns {express.Router}
  */
-function createLearningPathRoutes(h5pEditor) {
+function createLearningPathRoutes(h5pEditor, h5pPlayer) {
   const router = express.Router();
 
   // --- API: Get all node type definitions (for the editor UI) ---
@@ -133,6 +134,51 @@ function createLearningPathRoutes(h5pEditor) {
       res.json({ statement, lrsResult });
     } catch (err) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- H5P embed: serves raw H5P player HTML (no wrapper page) for iframes ---
+  router.get('/h5p-embed/:contentId', async (req, res) => {
+    try {
+      const html = await h5pPlayer.render(
+        req.params.contentId,
+        req.user,
+        req.language || 'en',
+        {
+          showCopyButton: false,
+          showDownloadButton: false,
+          showFrame: false,
+          showH5PIcon: false,
+          showLicenseButton: false,
+        }
+      );
+      res.send(html);
+    } catch (err) {
+      res.status(500).send(`<html><body><p style="color:red">Error loading H5P content: ${escapeHtml(err.message)}</p></body></html>`);
+    }
+  });
+
+  // --- API: Upload .h5p package and add to content library ---
+  router.post('/api/h5p-upload', async (req, res) => {
+    if (!req.files || !req.files.h5pFile) {
+      return res.status(400).json({ error: 'No .h5p file uploaded. Send as "h5pFile" field.' });
+    }
+    const file = req.files.h5pFile;
+    try {
+      // Use h5pEditor's package importer to install libraries + content
+      const result = await h5pEditor.packageImporter.addPackageLibrariesAndContent(
+        file.tempFilePath,
+        req.user
+      );
+      // Return the new content id and title
+      let title = `Content ${result.id}`;
+      try {
+        const meta = await h5pEditor.contentManager.getContentMetadata(result.id, req.user);
+        title = meta.title || title;
+      } catch { /* use default title */ }
+      res.json({ id: result.id, title });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to import H5P package: ' + err.message });
     }
   });
 

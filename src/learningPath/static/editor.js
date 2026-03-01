@@ -183,8 +183,15 @@
     // H5P picker modal
     const h5pModal = el('div', { class: 'modal-overlay hidden', id: 'h5p-modal' });
     h5pModal.innerHTML = `
-      <div class="modal-box">
-        <h2>Select H5P Content</h2>
+      <div class="modal-box" style="max-width:560px">
+        <h2>H5P Content</h2>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn-save" onclick="LPEditor.uploadH5pClick()" style="font-size:13px;padding:6px 14px">\u2B06 Upload .h5p File</button>
+          <button class="btn-cancel" onclick="window.open('/new','_blank')" style="font-size:13px;padding:6px 14px">\u2795 Create New in Editor</button>
+          <button class="btn-cancel" onclick="LPEditor.refreshH5pList()" style="font-size:13px;padding:6px 14px">\u21BB Refresh</button>
+        </div>
+        <input type="file" id="h5p-file-input" accept=".h5p" style="display:none">
+        <div id="h5p-upload-status" style="display:none;padding:8px 12px;margin-bottom:8px;border-radius:4px;font-size:13px"></div>
         <div class="h5p-picker-list" id="h5p-picker-list"></div>
         <div class="modal-actions">
           <button class="btn-cancel" onclick="LPEditor.hideH5pModal()">Cancel</button>
@@ -193,6 +200,10 @@
       </div>
     `;
     app.appendChild(h5pModal);
+
+    // Wire up hidden file input for H5P upload
+    const h5pFileInput = h5pModal.querySelector('#h5p-file-input');
+    h5pFileInput.addEventListener('change', onH5pFileSelected);
 
     // Title change listener
     document.getElementById('path-title').addEventListener('input', (e) => {
@@ -782,19 +793,26 @@
   function showH5pModal(fieldName) {
     h5pPickerField = fieldName;
     h5pPickerSelected = null;
-    const list = document.getElementById('h5p-picker-list');
-    if (h5pContent.length === 0) {
-      list.innerHTML = '<div style="padding:14px;color:#888">No H5P content found. Create some first!</div>';
-    } else {
-      list.innerHTML = h5pContent.map((c) =>
-        `<div class="h5p-picker-item" data-id="${c.id}" onclick="LPEditor.pickH5p(this, '${c.id}')">${escHtml(c.title)}</div>`
-      ).join('');
-    }
+    renderH5pPickerList();
+    const statusEl = document.getElementById('h5p-upload-status');
+    if (statusEl) { statusEl.style.display = 'none'; }
     document.getElementById('h5p-modal').classList.remove('hidden');
   }
 
   function hideH5pModal() {
     document.getElementById('h5p-modal').classList.add('hidden');
+  }
+
+  function renderH5pPickerList() {
+    const list = document.getElementById('h5p-picker-list');
+    if (!list) return;
+    if (h5pContent.length === 0) {
+      list.innerHTML = '<div style="padding:14px;color:#888">No H5P content found. Upload a .h5p file or create new content.</div>';
+    } else {
+      list.innerHTML = h5pContent.map((c) =>
+        `<div class="h5p-picker-item${h5pPickerSelected === String(c.id) ? ' selected' : ''}" data-id="${c.id}" onclick="LPEditor.pickH5p(this, '${c.id}')">${escHtml(c.title)}</div>`
+      ).join('');
+    }
   }
 
   function pickH5p(el, id) {
@@ -809,6 +827,62 @@
       renderProperties();
     }
     hideH5pModal();
+  }
+
+  function uploadH5pClick() {
+    document.getElementById('h5p-file-input').click();
+  }
+
+  async function onH5pFileSelected(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const statusEl = document.getElementById('h5p-upload-status');
+    statusEl.style.display = 'block';
+    statusEl.style.background = '#e3f2fd';
+    statusEl.style.color = '#1565c0';
+    statusEl.textContent = 'Uploading ' + file.name + '...';
+
+    const formData = new FormData();
+    formData.append('h5pFile', file);
+
+    try {
+      const res = await fetch('/learning-paths/api/h5p-upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Upload failed');
+
+      // Add to local content list and select it
+      h5pContent.push({ id: result.id, title: result.title });
+      h5pPickerSelected = String(result.id);
+      renderH5pPickerList();
+
+      statusEl.style.background = '#e8f5e9';
+      statusEl.style.color = '#2e7d32';
+      statusEl.textContent = 'Uploaded: ' + result.title;
+      toast('H5P package uploaded successfully', 'success');
+    } catch (err) {
+      statusEl.style.background = '#fce4ec';
+      statusEl.style.color = '#c62828';
+      statusEl.textContent = 'Upload failed: ' + err.message;
+      toast('H5P upload failed: ' + err.message, 'error');
+    }
+
+    // Reset file input so the same file can be re-selected
+    e.target.value = '';
+  }
+
+  async function refreshH5pList() {
+    try {
+      const res = await fetch('/learning-paths/api/h5p-content');
+      h5pContent = await res.json();
+      renderH5pPickerList();
+      toast('H5P content list refreshed', 'info');
+    } catch {
+      toast('Failed to refresh H5P content list', 'error');
+    }
   }
 
   // ─── Zoom controls ────────────────────────────────────────────────
@@ -928,6 +1002,8 @@
     hideH5pModal,
     pickH5p,
     selectH5p,
+    uploadH5pClick,
+    refreshH5pList,
     selectNode: selectNode,
     deleteNode,
     updateField,

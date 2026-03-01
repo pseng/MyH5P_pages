@@ -1,16 +1,21 @@
 /**
  * Learning Path Player
- * Walks learners through a node-based learning path, tracking progress via xAPI.
+ * Graph-based learner navigation through a node-based learning path.
+ * Sends xAPI statements to the configured LRS.
  */
 (function () {
   'use strict';
 
   let pathData = null;
-  let orderedNodes = [];        // Nodes in traversal order (flattened)
-  let currentIndex = 0;
-  let nodeStates = {};          // nodeId -> { status: 'pending'|'active'|'completed', score, startTime }
+  let nodeMap = {};               // nodeId -> node
+  let outConns = {};              // fromNodeId -> [connections]
+  let orderedNodes = [];          // All reachable nodes (DFS order) for sidebar/progress
+  let currentNodeId = null;
+  let history = [];               // Stack of visited nodeIds for "back" navigation
+  let nodeStates = {};            // nodeId -> { status: 'pending'|'active'|'completed', score, startTime }
   let hasLrs = false;
 
+  // ─── Init ──────────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', () => {
     const appEl = document.getElementById('app');
     const raw = appEl.getAttribute('data-path');
@@ -22,8 +27,24 @@
       return;
     }
 
+    if (!pathData.nodes || pathData.nodes.length === 0) {
+      appEl.innerHTML = '<div style="padding:40px;color:#888;">This learning path has no nodes.</div>';
+      return;
+    }
+
     hasLrs = !!(pathData.lrsConfig && pathData.lrsConfig.endpoint);
-    orderedNodes = buildNodeOrder(pathData);
+
+    // Build lookup structures
+    for (const node of pathData.nodes) {
+      nodeMap[node.id] = node;
+    }
+    for (const conn of (pathData.connections || [])) {
+      if (!outConns[conn.from]) outConns[conn.from] = [];
+      outConns[conn.from].push(conn);
+    }
+
+    // Build full traversal for sidebar / progress
+    orderedNodes = buildFullTraversal();
 
     // Init node states
     for (const node of orderedNodes) {
@@ -31,46 +52,85 @@
     }
 
     buildUI();
-    navigateTo(0);
+
+    // Navigate to the first playable node
+    if (orderedNodes.length > 0) {
+      goToNode(orderedNodes[0].id);
+    }
   });
 
+  // ─── Graph Traversal ───────────────────────────────────────────────
+
+  /** Port priority when walking the graph. */
+  const PORT_PRIORITY = ['next', 'pass', 'pathA', 'pathB', 'fail'];
+
+  function sortConnsByPriority(conns) {
+    return [...conns].sort((a, b) => {
+      const ai = PORT_PRIORITY.indexOf(a.fromPort);
+      const bi = PORT_PRIORITY.indexOf(b.fromPort);
+      return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
+    });
+  }
+
   /**
-   * Build a linear traversal order from the graph, starting at the Start node.
-   * Follows 'next' connections; stops at End or dead ends.
+   * Build a complete list of all reachable nodes via DFS from Start.
+   * Used for sidebar display and progress tracking.
    */
-  function buildNodeOrder(data) {
-    const { nodes, connections } = data;
-    const startNode = nodes.find((n) => n.type === 'start');
-    if (!startNode) return nodes.filter((n) => n.type !== 'start' && n.type !== 'end');
+  function buildFullTraversal() {
+    const startNode = pathData.nodes.find((n) => n.type === 'start');
+    if (!startNode) {
+      return pathData.nodes.filter((n) => n.type !== 'start' && n.type !== 'end');
+    }
 
     const ordered = [];
     const visited = new Set();
-    let current = startNode;
 
-    while (current && !visited.has(current.id)) {
-      visited.add(current.id);
-      // Don't include start/end in the playable nodes list unless they have content
-      if (current.type !== 'start') {
-        ordered.push(current);
+    function dfs(nodeId) {
+      if (!nodeId || visited.has(nodeId)) return;
+      visited.add(nodeId);
+
+      const node = nodeMap[nodeId];
+      if (!node) return;
+
+      // Exclude start from the playable list
+      if (node.type !== 'start') {
+        ordered.push(node);
       }
 
-      // Follow the first output connection (next, pass, pathA, etc.)
-      const outConns = connections.filter((c) => c.from === current.id);
-      if (outConns.length === 0) break;
-
-      // For branch/gate nodes with multiple outputs, we'll handle it in the player
-      const nextConn = outConns[0]; // default: first connection
-      current = nodes.find((n) => n.id === nextConn.to);
+      // Follow connections in priority order
+      const conns = outConns[nodeId] || [];
+      for (const conn of sortConnsByPriority(conns)) {
+        dfs(conn.to);
+      }
     }
 
-    // If no traversal possible, fallback to all content nodes
+    dfs(startNode.id);
+
     if (ordered.length === 0) {
-      return nodes.filter((n) => n.type !== 'start');
+      return pathData.nodes.filter((n) => n.type !== 'start');
     }
-
     return ordered;
   }
 
+  /**
+   * Find the next node from a given node, optionally preferring a specific port.
+   */
+  function getNextNodeId(fromId, preferPort) {
+    const conns = outConns[fromId] || [];
+    if (conns.length === 0) return null;
+
+    // If a specific port is requested, try it first
+    if (preferPort) {
+      const match = conns.find((c) => c.fromPort === preferPort);
+      if (match) return match.to;
+    }
+
+    // Otherwise follow priority order
+    const sorted = sortConnsByPriority(conns);
+    return sorted[0].to;
+  }
+
+  // ─── Build DOM ─────────────────────────────────────────────────────
   function buildUI() {
     const app = document.getElementById('app');
     app.innerHTML = '';
@@ -80,8 +140,12 @@
     topbar.id = 'player-topbar';
     topbar.innerHTML = `
       <a href="/learning-paths" class="brand">MyH5P</a>
-      <span class="title">${esc(pathData.title)}</span>
-      ${hasLrs ? '<span class="lrs-indicator"><span class="dot"></span>xAPI Active</span>' : '<span class="lrs-indicator"><span class="dot inactive"></span>xAPI Inactive</span>'}
+      <span class="title">${esc(pathData.title)}
+        <span class="lrs-indicator">
+          <span class="dot ${hasLrs ? '' : 'inactive'}"></span>
+          ${hasLrs ? 'LRS Connected' : 'No LRS'}
+        </span>
+      </span>
       <a href="/learning-paths" class="back-btn">Exit</a>
     `;
     app.appendChild(topbar);
@@ -101,7 +165,7 @@
     sidebar.id = 'player-sidebar';
     layout.appendChild(sidebar);
 
-    // Content
+    // Content area
     const content = document.createElement('div');
     content.id = 'player-content';
     content.innerHTML = '<div id="content-display"></div><div id="nav-buttons"></div>';
@@ -112,60 +176,122 @@
     renderSidebar();
   }
 
+  // ─── Sidebar ───────────────────────────────────────────────────────
   function renderSidebar() {
     const sidebar = document.getElementById('player-sidebar');
     if (!sidebar) return;
     sidebar.innerHTML = '';
 
-    orderedNodes.forEach((node, idx) => {
+    orderedNodes.forEach((node) => {
+      if (node.type === 'start') return;
+
       const state = nodeStates[node.id] || {};
-      const nt = getNodeType(node.type);
-      const div = document.createElement('div');
-      div.className = 'sidebar-node' + (idx === currentIndex ? ' active' : '') + (state.status === 'completed' ? ' completed' : '');
-      div.innerHTML = `
-        <div class="node-icon-sm" style="background:${nt.color || '#555'}">${nt.icon || '?'}</div>
+      const nt = getNodeTypeInfo(node.type);
+      const isActive = node.id === currentNodeId;
+      const isCompleted = state.status === 'completed';
+
+      const item = document.createElement('div');
+      item.className = 'sidebar-node' + (isActive ? ' active' : '') + (isCompleted ? ' completed' : '');
+      item.onclick = () => goToNode(node.id);
+      item.innerHTML = `
+        <div class="node-icon-sm" style="background:${nt.color}">${nt.icon}</div>
         <div class="node-info">
-          <div class="node-name">${esc(node.data?.title || nt.label || node.type)}</div>
-          <div class="node-type">${esc(nt.label || node.type)}</div>
+          <div class="node-name">${esc(node.data?.title || nt.label)}</div>
+          <div class="node-type">${esc(nt.label)}${node.data?.estimatedMinutes ? ' &middot; ~' + node.data.estimatedMinutes + ' min' : ''}</div>
         </div>
-        <span class="node-status">${state.status === 'completed' ? '\u2705' : state.status === 'active' ? '\u25B6' : '\u2B55'}</span>
+        <div class="node-status">${isCompleted ? '\u2705' : isActive ? '\u25B6\uFE0F' : '\u25CB'}</div>
       `;
-      div.addEventListener('click', () => navigateTo(idx));
-      sidebar.appendChild(div);
+      sidebar.appendChild(item);
     });
   }
 
-  function navigateTo(index) {
-    if (index < 0 || index >= orderedNodes.length) return;
+  // ─── Navigation ────────────────────────────────────────────────────
+  function goToNode(nodeId) {
+    const node = nodeMap[nodeId];
+    if (!node) return;
 
-    // Mark previous node as completed if it was active
-    if (currentIndex !== index && nodeStates[orderedNodes[currentIndex]?.id]?.status === 'active') {
-      markCompleted(orderedNodes[currentIndex]);
+    // If navigating away from the current node, auto-complete it
+    if (currentNodeId && currentNodeId !== nodeId) {
+      const prevState = nodeStates[currentNodeId];
+      if (prevState && prevState.status === 'active') {
+        markNodeCompleted(currentNodeId);
+      }
+      history.push(currentNodeId);
     }
 
-    currentIndex = index;
-    const node = orderedNodes[currentIndex];
+    currentNodeId = nodeId;
 
     // Mark as active
-    nodeStates[node.id].status = 'active';
-    nodeStates[node.id].startTime = new Date().toISOString();
+    if (nodeStates[nodeId]) {
+      if (nodeStates[nodeId].status !== 'completed') {
+        nodeStates[nodeId].status = 'active';
+      }
+      nodeStates[nodeId].startTime = new Date().toISOString();
+    }
 
-    // Send xAPI launched statement
     sendXapi('launched', node);
-
-    renderSidebar();
     renderContent(node);
+    renderSidebar();
     updateProgress();
   }
 
+  function next() {
+    if (!currentNodeId) return;
+    markNodeCompleted(currentNodeId);
+
+    const nextId = getNextNodeId(currentNodeId);
+    if (nextId) {
+      goToNode(nextId);
+    }
+  }
+
+  function prev() {
+    if (history.length === 0) return;
+    // Pop last node from history and navigate back
+    // Don't push to history (to avoid back/forward loops)
+    const prevId = history.pop();
+    currentNodeId = prevId;
+
+    if (nodeStates[prevId] && nodeStates[prevId].status !== 'completed') {
+      nodeStates[prevId].status = 'active';
+    }
+
+    renderContent(nodeMap[prevId]);
+    renderSidebar();
+    updateProgress();
+  }
+
+  function passGate() {
+    if (!currentNodeId) return;
+    markNodeCompleted(currentNodeId);
+    const nextId = getNextNodeId(currentNodeId, 'pass');
+    if (nextId) {
+      goToNode(nextId);
+    }
+  }
+
+  function chooseBranch(portName) {
+    if (!currentNodeId) return;
+    markNodeCompleted(currentNodeId);
+    const nextId = getNextNodeId(currentNodeId, portName);
+    if (nextId) {
+      goToNode(nextId);
+    } else {
+      // Fallback: follow default priority
+      const fallbackId = getNextNodeId(currentNodeId);
+      if (fallbackId) goToNode(fallbackId);
+    }
+  }
+
+  // ─── Content Rendering ─────────────────────────────────────────────
   function renderContent(node) {
     const display = document.getElementById('content-display');
-    const navBtns = document.getElementById('nav-buttons');
-    if (!display || !navBtns) return;
+    const navArea = document.getElementById('nav-buttons');
+    if (!display || !navArea) return;
 
-    const nt = getNodeType(node.type);
+    const nt = getNodeTypeInfo(node.type);
 
-    // Check if this is the End node
+    // ── End node → completion screen ──
     if (node.type === 'end') {
       display.innerHTML = `
         <div class="completion-screen">
@@ -175,79 +301,77 @@
           <a href="/learning-paths">Back to Learning Paths</a>
         </div>
       `;
-      navBtns.innerHTML = '';
-      markCompleted(node);
-      sendXapi('completed', node, { completion: true });
+      navArea.innerHTML = history.length > 0
+        ? `<button onclick="LPPlayer.prev()">&larr; Previous</button><span></span><span></span>`
+        : '';
+      markNodeCompleted(node.id);
+      sendXapiPathCompleted();
       return;
     }
 
-    // Build content based on node type
+    // ── Build content body based on node type ──
     let bodyHtml = '';
 
     switch (node.type) {
       case 'theory':
       case 'wiki':
-        bodyHtml = `<div class="content-body">${node.data?.content || '<p>No content provided.</p>'}</div>`;
+        bodyHtml = node.data?.content || '<p style="color:#888">No content provided.</p>';
         break;
 
       case 'guidedLab':
-        bodyHtml = `<div class="content-body">`;
-        if (node.data?.instructions) {
-          bodyHtml += node.data.instructions;
-        }
+        bodyHtml = node.data?.instructions || '<p style="color:#888">No instructions provided.</p>';
         if (node.data?.labUrl) {
-          bodyHtml += `<div style="margin-top:16px"><iframe src="${escAttr(node.data.labUrl)}" style="width:100%;min-height:500px;border:1px solid #ddd;border-radius:4px;"></iframe></div>`;
+          bodyHtml += `<div style="margin-top:16px"><a href="${escAttr(node.data.labUrl)}" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;background:#FF9800;color:#fff;border-radius:6px;text-decoration:none;font-weight:500">Launch Lab Environment &rarr;</a></div>`;
         }
-        bodyHtml += `</div>`;
         break;
 
       case 'url':
-        bodyHtml = `<div class="content-body url-embed">`;
         if (node.data?.url) {
-          if (node.data?.openInNewTab) {
-            bodyHtml += `<a class="external-link" href="${escAttr(node.data.url)}" target="_blank" rel="noopener noreferrer">\u2197 Open: ${esc(node.data.url)}</a>`;
+          if (node.data.openInNewTab) {
+            bodyHtml = `<div class="url-embed">
+              <a class="external-link" href="${escAttr(node.data.url)}" target="_blank" rel="noopener noreferrer">Open: ${esc(node.data.url)} &rarr;</a>
+            </div>`;
           } else {
-            bodyHtml += `<iframe src="${escAttr(node.data.url)}" style="width:100%;min-height:500px;border:none;"></iframe>`;
-            bodyHtml += `<a class="external-link" href="${escAttr(node.data.url)}" target="_blank" rel="noopener noreferrer">\u2197 Open in new tab</a>`;
+            bodyHtml = `<div class="url-embed">
+              <iframe src="${escAttr(node.data.url)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+              <a class="external-link" href="${escAttr(node.data.url)}" target="_blank" rel="noopener noreferrer">Open in new tab &rarr;</a>
+            </div>`;
           }
         } else {
-          bodyHtml += '<p>No URL configured.</p>';
+          bodyHtml = '<p style="color:#888">No URL configured.</p>';
         }
-        bodyHtml += `</div>`;
         break;
 
       case 'h5p':
-        bodyHtml = `<div class="content-body">`;
         if (node.data?.h5pContentId) {
-          bodyHtml += `<iframe src="/play/${escAttr(node.data.h5pContentId)}" style="width:100%;min-height:600px;border:none;"></iframe>`;
+          bodyHtml = `<iframe src="/learning-paths/h5p-embed/${escAttr(node.data.h5pContentId)}" style="min-height:600px" allow="fullscreen"></iframe>`;
         } else {
-          bodyHtml += '<p>No H5P content selected.</p>';
+          bodyHtml = '<p style="color:#888">No H5P content selected.</p>';
         }
-        bodyHtml += `</div>`;
         break;
 
       case 'cmi5':
       case 'scorm':
-        bodyHtml = `<div class="content-body">`;
         if (node.data?.packageUrl) {
-          bodyHtml += `<iframe src="${escAttr(node.data.packageUrl)}" style="width:100%;min-height:600px;border:none;" allow="fullscreen"></iframe>`;
+          bodyHtml = `<iframe src="${escAttr(node.data.packageUrl)}" style="min-height:600px" allow="fullscreen"></iframe>
+            <p style="margin-top:8px;font-size:12px;color:#888">Package type: ${esc(node.type.toUpperCase())}${node.data?.scormVersion ? ' ' + esc(node.data.scormVersion) : ''}</p>`;
         } else {
-          bodyHtml += `<p>No package URL configured.</p>`;
+          bodyHtml = '<p style="color:#888">No package URL configured.</p>';
         }
-        bodyHtml += `</div>`;
         break;
 
       case 'gate':
-        bodyHtml = `<div class="content-body" style="text-align:center;padding:40px">
-          <h2>\uD83D\uDEA7 ${esc(node.data?.title || 'Progress Check')}</h2>
-          <p style="color:#666;margin:12px 0">You need a score of ${node.data?.requiredScore || 70}% or higher to proceed.</p>
-          <button onclick="LPPlayer.passGate()" style="padding:10px 28px;background:#00897b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;margin-top:16px">Continue</button>
+        bodyHtml = `<div style="text-align:center;padding:40px">
+          <div style="font-size:48px;margin-bottom:16px">\uD83D\uDEA7</div>
+          <h2>Progress Check</h2>
+          <p style="color:#666;margin:12px 0">Required score: ${node.data?.requiredScore || 70}%</p>
+          <button onclick="LPPlayer.passGate()" style="margin-top:16px;padding:10px 28px;background:#00897b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px">Continue &rarr;</button>
         </div>`;
         break;
 
       case 'branch':
-        bodyHtml = `<div class="content-body">
-          <h2 style="text-align:center;margin-bottom:20px">${esc(node.data?.title || 'Choose your path')}</h2>
+        bodyHtml = `<div style="text-align:center;padding:24px">
+          <h2>${esc(node.data?.title || 'Choose your path')}</h2>
           <div class="branch-choices">
             <div class="branch-choice" onclick="LPPlayer.chooseBranch('pathA')">
               <h3>${esc(node.data?.pathALabel || 'Path A')}</h3>
@@ -262,93 +386,66 @@
         break;
 
       default:
-        bodyHtml = `<div class="content-body"><p>Unsupported node type: ${esc(node.type)}</p></div>`;
+        bodyHtml = '<p style="color:#888">Unsupported node type.</p>';
     }
 
-    const duration = node.data?.estimatedMinutes ? `<span style="color:#888;font-size:13px">\u23F1 ~${node.data.estimatedMinutes} min</span>` : '';
-
     display.innerHTML = `
-      <h1>${esc(node.data?.title || nt.label || node.type)}</h1>
-      ${node.data?.description ? `<p class="content-description">${esc(node.data.description)}</p>` : ''}
-      ${duration}
-      ${bodyHtml}
+      <h1>${esc(node.data?.title || nt.label)}</h1>
+      ${node.data?.description ? `<div class="content-description">${esc(node.data.description)}</div>` : ''}
+      ${node.data?.estimatedMinutes ? `<div style="color:#888;font-size:13px;margin-bottom:16px">\u23F1 ~${node.data.estimatedMinutes} min</div>` : ''}
+      <div class="content-body">${bodyHtml}</div>
     `;
 
-    // Nav buttons
-    const isFirst = currentIndex === 0;
-    const isLast = currentIndex === orderedNodes.length - 1;
-    const completedCount = Object.values(nodeStates).filter((s) => s.status === 'completed').length;
+    // ── Nav buttons ──
+    const hasNext = !!(getNextNodeId(currentNodeId));
+    const hasPrev = history.length > 0;
+    const total = orderedNodes.filter((n) => n.type !== 'end').length;
+    const completed = Object.values(nodeStates).filter((s) => s.status === 'completed').length;
 
-    navBtns.innerHTML = `
-      <button ${isFirst ? 'disabled' : ''} onclick="LPPlayer.prev()">\u2190 Previous</button>
-      <span class="completion-info">${completedCount} / ${orderedNodes.length} completed</span>
-      <button class="primary" ${isLast ? 'disabled' : ''} onclick="LPPlayer.next()">
-        ${isLast ? 'Finish' : 'Mark Complete & Continue \u2192'}
-      </button>
-    `;
+    // Don't show default nav for gate/branch (they have their own controls)
+    if (node.type === 'gate' || node.type === 'branch') {
+      navArea.innerHTML = `
+        <button onclick="LPPlayer.prev()" ${hasPrev ? '' : 'disabled'}>&larr; Previous</button>
+        <span class="completion-info">${completed} of ${total} completed</span>
+        <span></span>
+      `;
+    } else {
+      navArea.innerHTML = `
+        <button onclick="LPPlayer.prev()" ${hasPrev ? '' : 'disabled'}>&larr; Previous</button>
+        <span class="completion-info">${completed} of ${total} completed</span>
+        <button class="primary" onclick="LPPlayer.next()" ${hasNext ? '' : 'disabled'}>Mark Complete &amp; Next &rarr;</button>
+      `;
+    }
   }
 
-  function markCompleted(node) {
-    if (!node) return;
-    nodeStates[node.id].status = 'completed';
+  // ─── Completion Tracking ───────────────────────────────────────────
+  function markNodeCompleted(nodeId) {
+    const state = nodeStates[nodeId];
+    if (!state) return;
+    if (state.status === 'completed') return; // already done
 
-    // Calculate duration
-    const startTime = nodeStates[node.id].startTime;
-    const duration = startTime ? formatDuration(new Date(startTime), new Date()) : undefined;
+    state.status = 'completed';
 
-    sendXapi('completed', node, {
-      completion: true,
-      duration,
-    });
+    const node = nodeMap[nodeId];
+    if (node) {
+      const duration = state.startTime
+        ? formatDuration(new Date(state.startTime), new Date())
+        : undefined;
+      sendXapi('completed', node, { completion: true, duration });
+    }
   }
 
   function updateProgress() {
-    const completed = Object.values(nodeStates).filter((s) => s.status === 'completed').length;
-    const pct = orderedNodes.length > 0 ? (completed / orderedNodes.length) * 100 : 0;
+    const total = orderedNodes.filter((n) => n.type !== 'end').length;
+    const completed = Object.values(nodeStates).filter(
+      (s) => s.status === 'completed'
+    ).length;
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
     const bar = document.getElementById('progress-bar');
     if (bar) bar.style.width = pct + '%';
   }
 
-  function next() {
-    const current = orderedNodes[currentIndex];
-    if (current) markCompleted(current);
-    if (currentIndex < orderedNodes.length - 1) {
-      navigateTo(currentIndex + 1);
-    }
-  }
-
-  function prev() {
-    if (currentIndex > 0) {
-      navigateTo(currentIndex - 1);
-    }
-  }
-
-  function passGate() {
-    // For simplicity, gates auto-pass. In a real implementation,
-    // you'd check the score from the previous node.
-    next();
-  }
-
-  function chooseBranch(portName) {
-    // Find the connection for the chosen branch
-    const node = orderedNodes[currentIndex];
-    if (!node) return;
-    const conn = pathData.connections.find(
-      (c) => c.from === node.id && c.fromPort === portName
-    );
-    if (conn) {
-      const targetIdx = orderedNodes.findIndex((n) => n.id === conn.to);
-      if (targetIdx >= 0) {
-        markCompleted(node);
-        navigateTo(targetIdx);
-        return;
-      }
-    }
-    // Fallback: just go next
-    next();
-  }
-
-  // ─── xAPI helpers ─────────────────────────────────────────────────
+  // ─── xAPI ──────────────────────────────────────────────────────────
   async function sendXapi(verb, node, result) {
     if (!hasLrs || !pathData.id) return;
     try {
@@ -358,14 +455,21 @@
         body: JSON.stringify({ verb, nodeId: node.id, result }),
       });
     } catch {
-      // Silently fail - don't block learner progress
+      // silently fail for xAPI - don't block the learner
     }
   }
 
-  // ─── Utilities ────────────────────────────────────────────────────
-  function getNodeType(type) {
-    // Basic type info for rendering (we don't load full nodeTypes in player)
-    const types = {
+  async function sendXapiPathCompleted() {
+    if (!hasLrs || !pathData.id) return;
+    const endNode = pathData.nodes.find((n) => n.type === 'end');
+    if (endNode) {
+      sendXapi('completed', endNode, { completion: true });
+    }
+  }
+
+  // ─── Helpers ───────────────────────────────────────────────────────
+  function getNodeTypeInfo(type) {
+    const defaults = {
       start: { label: 'Start', color: '#4CAF50', icon: '\u25B6' },
       end: { label: 'End', color: '#f44336', icon: '\u23F9' },
       theory: { label: 'Theory Unit', color: '#2196F3', icon: '\uD83D\uDCD6' },
@@ -378,7 +482,7 @@
       gate: { label: 'Gate', color: '#FF5722', icon: '\uD83D\uDEA7' },
       branch: { label: 'Branch', color: '#607D8B', icon: '\uD83D\uDD00' },
     };
-    return types[type] || { label: type, color: '#555', icon: '?' };
+    return defaults[type] || { label: type, color: '#555', icon: '?' };
   }
 
   function esc(str) {
@@ -397,7 +501,7 @@
     return `PT${hours ? hours + 'H' : ''}${mins % 60}M${secs % 60}S`;
   }
 
-  // ─── Public API ───────────────────────────────────────────────────
+  // ─── Public API ────────────────────────────────────────────────────
   window.LPPlayer = {
     next,
     prev,
