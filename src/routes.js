@@ -143,8 +143,12 @@ function escapeHtml(str) {
 
 const NAV = `
   <nav class="navbar navbar-dark bg-dark mb-4">
-    <div class="container">
+    <div class="container-fluid">
       <a class="navbar-brand" href="/">MyH5P Player</a>
+      <div class="d-flex gap-2">
+        <a href="/" class="btn btn-outline-light btn-sm">H5P Content</a>
+        <a href="/learning-paths" class="btn btn-outline-info btn-sm">Learning Paths</a>
+      </div>
     </div>
   </nav>`;
 

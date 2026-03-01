@@ -5,4 +5,5 @@ h5p/tmp/
 h5p/content/
 h5p/user-data/
 h5p/libraries/
+data/
 *.log
