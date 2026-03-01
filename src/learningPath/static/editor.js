@@ -560,6 +560,8 @@
   }
 
   function selectNode(nodeId) {
+    // Flush any pending field edits from the current node before switching
+    flushPropertyFields();
     selectedNodeId = nodeId;
     renderNodes(); // update selection visual
     renderProperties();
@@ -596,6 +598,35 @@
   }
 
   // ─── Properties panel ─────────────────────────────────────────────
+
+  /**
+   * Flush all pending field values from the properties panel into node data.
+   * Must be called before saving or switching the selected node,
+   * because text/textarea fields only fire events on blur/input –
+   * if the user presses Ctrl+S or clicks another node while a field
+   * is focused, the latest value would otherwise be lost.
+   */
+  function flushPropertyFields() {
+    if (!selectedNodeId) return;
+    const node = pathData.nodes.find((n) => n.id === selectedNodeId);
+    if (!node) return;
+    if (!node.data) node.data = {};
+
+    const panel = document.getElementById('properties-panel');
+    if (!panel) return;
+
+    panel.querySelectorAll('[data-field]').forEach((el) => {
+      const fieldName = el.getAttribute('data-field');
+      if (el.type === 'checkbox') {
+        node.data[fieldName] = el.checked;
+      } else if (el.type === 'number') {
+        node.data[fieldName] = parseFloat(el.value) || 0;
+      } else {
+        node.data[fieldName] = el.value;
+      }
+    });
+  }
+
   function renderProperties() {
     const panel = document.getElementById('properties-panel');
     if (!panel) return;
@@ -616,24 +647,24 @@
 
     let html = `<h3><span>${nt.icon || ''} ${nt.label || node.type}</span><button onclick="LPEditor.selectNode(null)">&times;</button></h3>`;
 
-    // Fields
+    // Fields – use oninput for text/textarea so data stays in sync as user types
     for (const field of nt.fields || []) {
       const val = node.data?.[field.name] ?? field.default ?? '';
       html += `<div class="prop-section"><label>${escHtml(field.label)}</label>`;
 
       switch (field.type) {
         case 'text':
-          html += `<input type="text" value="${escAttr(val)}" data-field="${field.name}" onchange="LPEditor.updateField('${field.name}', this.value)">`;
+          html += `<input type="text" value="${escAttr(val)}" data-field="${field.name}" oninput="LPEditor.updateField('${field.name}', this.value)">`;
           break;
         case 'textarea':
         case 'richtext':
-          html += `<textarea data-field="${field.name}" onchange="LPEditor.updateField('${field.name}', this.value)">${escHtml(val)}</textarea>`;
+          html += `<textarea data-field="${field.name}" oninput="LPEditor.updateField('${field.name}', this.value)">${escHtml(val)}</textarea>`;
           break;
         case 'url':
-          html += `<input type="url" value="${escAttr(val)}" data-field="${field.name}" onchange="LPEditor.updateField('${field.name}', this.value)">`;
+          html += `<input type="url" value="${escAttr(val)}" data-field="${field.name}" oninput="LPEditor.updateField('${field.name}', this.value)">`;
           break;
         case 'number':
-          html += `<input type="number" value="${escAttr(val)}" data-field="${field.name}" onchange="LPEditor.updateField('${field.name}', parseFloat(this.value))">`;
+          html += `<input type="number" value="${escAttr(val)}" data-field="${field.name}" oninput="LPEditor.updateField('${field.name}', parseFloat(this.value))">`;
           break;
         case 'checkbox':
           html += `<div class="checkbox-wrap"><input type="checkbox" ${val ? 'checked' : ''} onchange="LPEditor.updateField('${field.name}', this.checked)"><label>${escHtml(field.label)}</label></div>`;
@@ -663,13 +694,16 @@
     panel.innerHTML = html;
   }
 
+  let _renderTimer = null;
   function updateField(fieldName, value) {
     const node = pathData.nodes.find((n) => n.id === selectedNodeId);
     if (!node) return;
     if (!node.data) node.data = {};
     node.data[fieldName] = value;
     dirty = true;
-    renderCanvas();
+    // Debounce canvas re-render so rapid typing (oninput) doesn't cause lag
+    clearTimeout(_renderTimer);
+    _renderTimer = setTimeout(renderCanvas, 300);
   }
 
   // ─── Minimap ──────────────────────────────────────────────────────
@@ -714,6 +748,9 @@
 
   // ─── Save / Load ──────────────────────────────────────────────────
   async function save() {
+    // Flush any pending field edits before serializing
+    flushPropertyFields();
+
     const titleInput = document.getElementById('path-title');
     pathData.title = titleInput ? titleInput.value : pathData.title;
 
