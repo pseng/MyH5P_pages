@@ -91,7 +91,9 @@
     }
     for (const [cat, items] of Object.entries(categories)) {
       const catLabel = { control: 'Flow Control', content: 'Content Nodes', package: 'Package Nodes' }[cat] || cat;
-      palette.innerHTML += `<h3>${catLabel}</h3>`;
+      const heading = document.createElement('h3');
+      heading.textContent = catLabel;
+      palette.appendChild(heading);
       for (const item of items) {
         const pn = el('div', { class: 'palette-node', draggable: 'true', 'data-type': item.key });
         pn.innerHTML = `<div class="node-icon" style="background:${item.color}">${item.icon}</div><span>${item.label}</span>`;

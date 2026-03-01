@@ -8,7 +8,14 @@ An H5P content player and editor built with [H5P-Nodejs-library](https://github.
 - **Create** new H5P content using the built-in editor
 - **Edit** existing H5P content
 - **Delete** content you no longer need
+- **Upload** .h5p files directly from your machine
 - **Content Hub** integration for discovering H5P content types
+- **Learning Path Creator** — visual node-based editor for building learning paths
+  - Drag-and-drop flow control nodes (Start, End, Gate, Branch) and content nodes (Theory, Lab, Wiki, URL, H5P, cmi5, SCORM)
+  - Connect nodes via ports to define flow (pass/fail gates, A/B branches)
+  - Upload .h5p files directly into learning paths
+  - Graph-based player that follows node connections
+  - xAPI/LRS integration for tracking learner progress
 
 ## Quick Start
 
@@ -58,7 +65,17 @@ The server starts at **http://localhost:8080** by default.
 │   ├── index.js             # Express server entry point
 │   ├── createH5PEditor.js   # H5P editor/player factory
 │   ├── routes.js            # Content management routes
-│   └── User.js              # User model
+│   ├── User.js              # User model
+│   └── learningPath/        # Learning path creator
+│       ├── routes.js        # Learning path API + HTML pages
+│       ├── nodeTypes.js     # Node type definitions + validation
+│       ├── storage.js       # File-based learning path storage
+│       ├── xapi.js          # xAPI/LRS statement builder
+│       └── static/          # Frontend assets
+│           ├── editor.js    # SVG node editor
+│           ├── editor.css   # Editor styles
+│           ├── player.js    # Learning path player
+│           └── player.css   # Player styles
 └── h5p/                     # H5P runtime data (gitignored)
     ├── core/                # H5P core player files
     ├── editor/              # H5P editor files
@@ -79,6 +96,8 @@ All content is stored on the local filesystem under `h5p/`.
 
 ## Routes
 
+### H5P Content
+
 | Route | Description |
 |-------|-------------|
 | `GET /` | List all H5P content |
@@ -86,6 +105,50 @@ All content is stored on the local filesystem under `h5p/`.
 | `GET /play/:id` | Play H5P content |
 | `GET /edit/:id` | Edit H5P content |
 | `POST /delete/:id` | Delete H5P content |
+| `POST /upload-h5p` | Upload .h5p file from machine |
+
+### Learning Paths
+
+| Route | Description |
+|-------|-------------|
+| `GET /learning-paths` | List all learning paths |
+| `GET /learning-paths/editor` | Create new learning path |
+| `GET /learning-paths/editor/:id` | Edit existing learning path |
+| `GET /learning-paths/play/:id` | Play a learning path |
+| `POST /learning-paths/api/h5p-upload` | Upload .h5p into a learning path |
+
+## Updating
+
+To update an existing installation:
+
+```bash
+# Pull the latest changes
+git pull origin main
+
+# Install any new or updated dependencies
+npm install
+
+# Re-download H5P core files (if needed)
+npm run download:h5p
+
+# Restart the server
+npm start
+```
+
+If you have local changes that conflict during pull:
+
+```bash
+# Option 1: Stash your changes, pull, then restore
+git stash
+git pull origin main
+git stash pop
+
+# Option 2: Discard local changes to a specific file
+git checkout -- package-lock.json
+git pull origin main
+```
+
+Your H5P content and learning paths are stored in `h5p/content/` and `h5p/learning-paths/` respectively and will not be affected by updates.
 
 ## License
 

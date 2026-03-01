@@ -128,6 +128,22 @@ function createRoutes(h5pEditor, h5pPlayer, languageOverride) {
     }
   });
 
+  // --- Upload .h5p file from machine ---
+  router.post('/upload-h5p', async (req, res) => {
+    if (!req.files || !req.files.h5pFile) {
+      return res.status(400).send(renderErrorPage('Upload Error', 'No .h5p file was uploaded.'));
+    }
+    try {
+      const result = await h5pEditor.packageImporter.addPackageLibrariesAndContent(
+        req.files.h5pFile.tempFilePath,
+        req.user
+      );
+      res.redirect('/play/' + result.id);
+    } catch (err) {
+      res.status(500).send(renderErrorPage('Upload Error', 'Failed to import H5P package: ' + err.message));
+    }
+  });
+
   return router;
 }
 
@@ -206,8 +222,14 @@ function renderListPage(contentList) {
   <div class="container">
     <div class="d-flex justify-content-between align-items-center mb-3">
       <h1>H5P Content</h1>
-      <a href="/new" class="btn btn-success">+ New Content</a>
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-primary" onclick="document.getElementById('h5p-upload-input').click()">Upload .h5p File</button>
+        <a href="/new" class="btn btn-success">+ New Content</a>
+      </div>
     </div>
+    <form id="h5p-upload-form" method="post" action="/upload-h5p" enctype="multipart/form-data" style="display:none">
+      <input type="file" id="h5p-upload-input" name="h5pFile" accept=".h5p" onchange="this.form.submit()">
+    </form>
     <table class="table table-striped">
       <thead>
         <tr><th>Title</th><th class="text-end">Actions</th></tr>
