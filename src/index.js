@@ -13,6 +13,7 @@ const {
 
 const createH5PEditor = require('./createH5PEditor');
 const createRoutes = require('./routes');
+const createLearningPathRoutes = require('./learningPath/routes');
 const User = require('./User');
 
 const PORT = process.env.PORT || 8080;
@@ -111,6 +112,14 @@ async function start() {
     contentTypeCacheExpressRouter(h5pEditor.contentTypeCache, undefined, LANGUAGE)
   );
 
+  // Learning Path routes (node editor, player, API)
+  const learningPathRouter = createLearningPathRoutes(h5pEditor);
+  app.use('/learning-paths/static', express.static(
+    path.join(__dirname, 'learningPath', 'static'),
+    { maxAge: '1d' }
+  ));
+  app.use('/learning-paths', learningPathRouter);
+
   // Our custom content management routes (list, play, edit, new, delete)
   app.use('/', createRoutes(h5pEditor, h5pPlayer, LANGUAGE));
 
@@ -119,10 +128,15 @@ async function start() {
     console.log(`MyH5P Player is running at http://localhost:${PORT}`);
     console.log('');
     console.log('Features:');
-    console.log('  - Browse content:  http://localhost:' + PORT + '/');
-    console.log('  - Create content:  http://localhost:' + PORT + '/new');
-    console.log('  - Play content:    http://localhost:' + PORT + '/play/:id');
-    console.log('  - Edit content:    http://localhost:' + PORT + '/edit/:id');
+    console.log('  - Browse content:    http://localhost:' + PORT + '/');
+    console.log('  - Create content:    http://localhost:' + PORT + '/new');
+    console.log('  - Play content:      http://localhost:' + PORT + '/play/:id');
+    console.log('  - Edit content:      http://localhost:' + PORT + '/edit/:id');
+    console.log('');
+    console.log('Learning Paths:');
+    console.log('  - Browse paths:      http://localhost:' + PORT + '/learning-paths');
+    console.log('  - Path editor:       http://localhost:' + PORT + '/learning-paths/editor');
+    console.log('  - Play path:         http://localhost:' + PORT + '/learning-paths/play/:id');
   });
 }
 
